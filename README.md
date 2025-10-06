@@ -1,6 +1,5 @@
 # Windows-11-hardening
 
-## Overview
 This PowerShell script provides an **interactive menu** to harden or restore your Windows system by toggling several optional features that can be exploited by attackers. It is based on recommendations from Make Tech Easier (August 2025).
 
 The script allows you to:
