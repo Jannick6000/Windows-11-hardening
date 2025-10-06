@@ -1,6 +1,6 @@
 # Windows Security Hardening Script with Interactive Menu
 # Based on recommendations from Make Tech Easier (Aug 2025)
-# Author: ChatGPT
+# Author: Jannick6000
 # Description: This script allows users to harden or restore Windows security settings interactively.
 # Run this script as Administrator.
 
