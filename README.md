@@ -61,6 +61,6 @@ This script is ideal for:
 
 ---
 
-**Date:** august 2025  
-**Version:** 1.0
+**Date:** January 2026  
+**Version:** 1.1
 
