@@ -1,104 +1,141 @@
 # Windows Security Hardening Script with Interactive Menu
-# Author: Jannick6000
 # Description: This script allows users to harden or restore Windows security settings interactively.
 # Run this script as Administrator.
+# Updated: Jan 2026 (safer restore defaults + HKLM/HKCU WSH handling)
+# Version 1.1
 
-# --- Helper Functions ---
-function Disable-ServiceSafe($serviceName) {
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function Assert-Admin {
+    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if (-not $isAdmin) {
+        Write-Host "This script must be run as Administrator." -ForegroundColor Red
+        throw "Not running as Administrator."
+    }
+}
+
+function Get-ServiceSafe([string]$Name) {
+    try { return Get-Service -Name $Name -ErrorAction Stop } catch { return $null }
+}
+
+function Disable-ServiceSafe([string]$serviceName) {
+    $svc = Get-ServiceSafe $serviceName
+    if (-not $svc) {
+        Write-Host "[!] Service not found: $serviceName (skipping)" -ForegroundColor DarkYellow
+        return
+    }
+
     Write-Host "[+] Disabling service: $serviceName" -ForegroundColor Cyan
     try {
-        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+        if ($svc.Status -ne "Stopped") {
+            Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+        }
         Set-Service -Name $serviceName -StartupType Disabled
         Write-Host "[OK] $serviceName disabled." -ForegroundColor Green
     } catch {
-        Write-Host "[!] Failed to disable $serviceName: $_" -ForegroundColor Red
+        Write-Host "[!] Failed to disable $serviceName: $($_.Exception.Message)" -ForegroundColor Red
     }
 }
 
-function Enable-ServiceSafe($serviceName) {
-    Write-Host "[+] Enabling service: $serviceName" -ForegroundColor Cyan
+function Set-ServiceStartupSafe([string]$serviceName, [ValidateSet("Automatic","Manual","Disabled")] [string]$startupType) {
+    $svc = Get-ServiceSafe $serviceName
+    if (-not $svc) {
+        Write-Host "[!] Service not found: $serviceName (skipping)" -ForegroundColor DarkYellow
+        return
+    }
+
+    Write-Host "[+] Setting service startup: $serviceName -> $startupType" -ForegroundColor Cyan
     try {
-        Set-Service -Name $serviceName -StartupType Automatic
-        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
-        Write-Host "[OK] $serviceName enabled." -ForegroundColor Green
+        Set-Service -Name $serviceName -StartupType $startupType
+        Write-Host "[OK] $serviceName startup set to $startupType." -ForegroundColor Green
     } catch {
-        Write-Host "[!] Failed to enable $serviceName: $_" -ForegroundColor Red
+        Write-Host "[!] Failed to set startup for $serviceName: $($_.Exception.Message)" -ForegroundColor Red
     }
 }
 
-# --- Hardening Function ---
-function Harden-System {
-    Write-Host "\n=== HARDENING WINDOWS SECURITY SETTINGS ===" -ForegroundColor Yellow
+function Start-ServiceSafe([string]$serviceName) {
+    $svc = Get-ServiceSafe $serviceName
+    if (-not $svc) { return }
 
-    # 1. Manual Wi-Fi step
-    Write-Host "\n[1] Disable automatic Wi-Fi connection for public networks (manual step)." -ForegroundColor Yellow
+    try {
+        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+    } catch { }
+}
+
+function Set-WSHEnabled([int]$value) {
+    $paths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows Script Host\Settings",
+        "HKCU:\SOFTWARE\Microsoft\Windows Script Host\Settings"
+    )
+
+    foreach ($keyPath in $paths) {
+        try {
+            if (-not (Test-Path $keyPath)) {
+                New-Item -Path $keyPath -Force | Out-Null
+            }
+            if ($null -eq (Get-ItemProperty -Path $keyPath -Name "Enabled" -ErrorAction SilentlyContinue)) {
+                New-ItemProperty -Path $keyPath -Name "Enabled" -PropertyType DWord -Value $value -Force | Out-Null
+            } else {
+                Set-ItemProperty -Path $keyPath -Name "Enabled" -Value $value -Force
+            }
+            Write-Host "[OK] WSH: $keyPath Enabled=$value" -ForegroundColor Green
+        } catch {
+            Write-Host "[!] Failed WSH update at $keyPath: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+}
+
+function Harden-System {
+    Write-Host "`n=== HARDENING WINDOWS SECURITY SETTINGS ===" -ForegroundColor Yellow
+
+    Write-Host "`n[1] Disable automatic Wi-Fi connection for public networks (manual step)." -ForegroundColor Yellow
     Write-Host "Use: Settings -> Network & Internet -> Wi-Fi -> Manage known networks -> Disable 'Connect automatically'." -ForegroundColor Gray
 
-    # 2. Disable WebClient
-    Write-Host "\n[2] Disabling WebClient (WebDAV)..." -ForegroundColor Yellow
-    Disable-ServiceSafe -serviceName "WebClient"
+    Write-Host "`n[2] Disabling WebClient (WebDAV)..." -ForegroundColor Yellow
+    Disable-ServiceSafe "WebClient"
 
-    # 3. Disable Print Spooler
-    Write-Host "\n[3] Disabling Print Spooler..." -ForegroundColor Yellow
-    Disable-ServiceSafe -serviceName "Spooler"
+    Write-Host "`n[3] Disabling Print Spooler..." -ForegroundColor Yellow
+    Disable-ServiceSafe "Spooler"
 
-    # 4. Disable Network Discovery services
-    Write-Host "\n[4] Disabling Network Discovery services..." -ForegroundColor Yellow
-    Disable-ServiceSafe -serviceName "FDResPub"
-    Disable-ServiceSafe -serviceName "SSDPSRV"
-    Disable-ServiceSafe -serviceName "upnphost"
+    Write-Host "`n[4] Disabling Network Discovery services..." -ForegroundColor Yellow
+    Disable-ServiceSafe "FDResPub"
+    Disable-ServiceSafe "SSDPSRV"
+    Disable-ServiceSafe "upnphost"
 
-    # 5. Disable Windows Script Host
-    Write-Host "\n[5] Disabling Windows Script Host (WSH)..." -ForegroundColor Yellow
-    try {
-        $keyPath = "HKLM:\SOFTWARE\Microsoft\Windows Script Host\Settings"
-        if (-not (Test-Path $keyPath)) {
-            New-Item -Path $keyPath -Force | Out-Null
-        }
-        New-ItemProperty -Path $keyPath -Name "Enabled" -PropertyType DWord -Value 0 -Force | Out-Null
-        Write-Host "[OK] Windows Script Host disabled (Enabled=0)." -ForegroundColor Green
-    } catch {
-        Write-Host "[!] Failed to modify registry for WSH: $_" -ForegroundColor Red
-    }
+    Write-Host "`n[5] Disabling Windows Script Host (WSH)..." -ForegroundColor Yellow
+    Set-WSHEnabled 0
 
-    Write-Host "\n[+] Hardening complete. Restart your PC for all changes to take effect." -ForegroundColor Cyan
+    Write-Host "`n[+] Hardening complete. A restart is recommended." -ForegroundColor Cyan
 }
 
-# --- Restore Function ---
 function Restore-System {
-    Write-Host "\n=== RESTORING DEFAULT WINDOWS SETTINGS ===" -ForegroundColor Yellow
+    Write-Host "`n=== RESTORING WINDOWS SETTINGS ===" -ForegroundColor Yellow
 
-    # Restore WebClient
-    Write-Host "\n[Restore] Re-enabling WebClient..." -ForegroundColor Yellow
-    Enable-ServiceSafe -serviceName "WebClient"
+    # More appropriate “restore defaults” for most systems:
+    # WebClient is deprecated and not started by default => Manual is safer than Automatic.
+    # Network discovery/UPnP/SSDP are typically Manual (often Trigger Start).
+    Write-Host "`n[Restore] WebClient..." -ForegroundColor Yellow
+    Set-ServiceStartupSafe "WebClient" "Manual"
 
-    # Restore Print Spooler
-    Write-Host "\n[Restore] Re-enabling Print Spooler..." -ForegroundColor Yellow
-    Enable-ServiceSafe -serviceName "Spooler"
+    Write-Host "`n[Restore] Print Spooler..." -ForegroundColor Yellow
+    Set-ServiceStartupSafe "Spooler" "Automatic"
+    Start-ServiceSafe "Spooler"
 
-    # Restore Network Discovery
-    Write-Host "\n[Restore] Re-enabling Network Discovery services..." -ForegroundColor Yellow
-    Enable-ServiceSafe -serviceName "FDResPub"
-    Enable-ServiceSafe -serviceName "SSDPSRV"
-    Enable-ServiceSafe -serviceName "upnphost"
+    Write-Host "`n[Restore] Network Discovery services..." -ForegroundColor Yellow
+    Set-ServiceStartupSafe "FDResPub" "Manual"
+    Set-ServiceStartupSafe "SSDPSRV" "Manual"
+    Set-ServiceStartupSafe "upnphost" "Manual"
 
-    # Restore WSH
-    Write-Host "\n[Restore] Re-enabling Windows Script Host (WSH)..." -ForegroundColor Yellow
-    try {
-        $keyPath = "HKLM:\SOFTWARE\Microsoft\Windows Script Host\Settings"
-        if (-not (Test-Path $keyPath)) {
-            New-Item -Path $keyPath -Force | Out-Null
-        }
-        Set-ItemProperty -Path $keyPath -Name "Enabled" -Value 1 -Force
-        Write-Host "[OK] Windows Script Host re-enabled (Enabled=1)." -ForegroundColor Green
-    } catch {
-        Write-Host "[!] Failed to modify registry for WSH: $_" -ForegroundColor Red
-    }
+    Write-Host "`n[Restore] Windows Script Host (WSH)..." -ForegroundColor Yellow
+    Set-WSHEnabled 1
 
-    Write-Host "\n[+] Restore complete. Some changes may require a restart." -ForegroundColor Cyan
+    Write-Host "`n[+] Restore complete. Some changes may require a restart." -ForegroundColor Cyan
+    Write-Host "[i] Note: Enabling WSH does not guarantee the VBScript engine is installed/enabled on all Windows 11 builds." -ForegroundColor DarkGray
 }
 
-# --- Interactive Menu ---
 function Show-Menu {
     Clear-Host
     Write-Host "===============================================" -ForegroundColor DarkCyan
@@ -110,22 +147,24 @@ function Show-Menu {
     Write-Host "===============================================" -ForegroundColor DarkCyan
 }
 
-# --- Menu Loop ---
+# --- Main ---
+Assert-Admin
+
 do {
     Show-Menu
     $choice = Read-Host "Select an option (1-3)"
 
     switch ($choice) {
-        1 { Harden-System }
-        2 { Restore-System }
-        3 { Write-Host "Exiting..." -ForegroundColor Gray }
+        "1" { Harden-System }
+        "2" { Restore-System }
+        "3" { Write-Host "Exiting..." -ForegroundColor Gray }
         default { Write-Host "Invalid selection. Please choose 1, 2, or 3." -ForegroundColor Red }
     }
 
-    if ($choice -ne 3) {
-        Write-Host "\nPress any key to return to menu..." -ForegroundColor DarkGray
+    if ($choice -ne "3") {
+        Write-Host "`nPress any key to return to menu..." -ForegroundColor DarkGray
         [void][System.Console]::ReadKey($true)
     }
-} while ($choice -ne 3)
+} while ($choice -ne "3")
 
-Write-Host "\nScript ended. Stay secure!" -ForegroundColor Green
+Write-Host "`nScript ended." -ForegroundColor Green
